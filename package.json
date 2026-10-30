@@ -1,0 +1,20 @@
+{
+  "name": "agentloop-supervisor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An experimental OpenCode supervisor for GitHub issue workflows",
+  "scripts": {
+    "agentloop": "tsx scripts/supervisor.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.19.4",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=22" }
+}

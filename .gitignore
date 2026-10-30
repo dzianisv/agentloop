@@ -1,0 +1,5 @@
+node_modules/
+.supervisor/
+.env
+.env.*
+!.env.example
