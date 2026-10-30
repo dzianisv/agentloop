@@ -166,8 +166,8 @@ export function queuedTicket<T>(issue: T, outcome: TicketOutcome, now = Date.now
 export function options(argv: string[]) {
   const string = (defaultValue?: string) => ({ type: "string" as const, ...(defaultValue === undefined ? {} : { default: defaultValue }) });
   const bool = { type: "boolean" as const, default: false };
-  const { values: v } = parseCli({ args: argv, options: {
-    issue: string(), repo: string(), label: string("production-readiness"), limit: string("1"), drain: bool,
+  const { values: v, positionals } = parseCli({ args: argv, allowPositionals: true, options: {
+    issue: string(), repo: string(), label: string(), limit: string("1"), drain: bool,
     runtime: string(), "probe-timeout-sec": string("120"),
     "max-iterations": string("3"), "timeout-sec": string("1800"), "check-timeout-sec": string("3600"), "state-dir": string(".supervisor"),
     worktree: string(), base: string("origin/main"), "adopt-pr": string(), "resume-session": string(),
@@ -176,6 +176,10 @@ export function options(argv: string[]) {
     // Accepted for old launch commands; no manual acceptance-plan framework is used.
     "acceptance-plan": string(), "max-retries": string("0"), "ticket-timeout-sec": string(),
   } });
+  if (positionals.length > 1) throw Error("Pass exactly one GitHub repository");
+  const target = positionals[0] ? parseGitHubRepository(positionals[0]) : v.repo ? parseGitHubRepository(v.repo) : undefined;
+  if (v.repo && positionals[0] && parseGitHubRepository(v.repo).toLowerCase() !== target!.toLowerCase()) throw Error("Conflicting repository arguments");
+  if (!target && !v.help && !v["self-test"]) throw Error("Pass a GitHub repository, for example: agentloop github.com/owner/repo");
   for (const key of ["limit", "max-iterations", "timeout-sec", "check-timeout-sec", "probe-timeout-sec"] as const) if (!Number.isSafeInteger(Number(v[key])) || Number(v[key]) < 1) throw Error(`${key} must be a positive integer`);
   for (const key of ["issue", "adopt-pr"] as const) if (v[key] && (!Number.isSafeInteger(Number(v[key])) || Number(v[key]) < 1)) throw Error(`Invalid ${key}`);
   if (v.runtime && v.runtime !== "opencode") throw Error("Only the OpenCode SDK runtime is supported; legacy Pi session IDs remain checkpoint history");
@@ -183,7 +187,14 @@ export function options(argv: string[]) {
   if (resume && !/^ses_[A-Za-z0-9]+$/.test(resume)) throw Error("Only OpenCode ses_ session IDs can be resumed; legacy Pi IDs are retained as history");
   if (v.issue && v.drain) throw Error("Choose --issue or --drain");
   if ((v["adopt-pr"] || v["verify-only"]) && !v.issue) throw Error("Adoption/verification requires --issue");
-  return { ...v };
+  return { ...v, target, drain: v.drain || Boolean(target && !v.issue) };
+}
+
+/** Accept GitHub owner/repo identifiers without accepting arbitrary clone URLs. */
+export function parseGitHubRepository(input: string): string {
+  const match = /^(?:https:\/\/)?(?:github\.com\/)?([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(input);
+  if (!match || match[2] === "." || match[2] === "..") throw Error("Expected a GitHub repository such as github.com/owner/repo");
+  return `${match[1]}/${match[2]}`;
 }
 type Options = ReturnType<typeof options>;
 
@@ -572,22 +583,38 @@ async function ticket(issue: Issue, repo: string, root: string, opts: Options, d
 
 async function main() {
   const opts = options(process.argv.slice(2));
-  if (opts.help) { console.log("supervisor.ts --issue N [--adopt-pr N --worktree PATH] | --drain --label production-readiness\nDefault: OpenCode SDK planner -> implementer -> controller checks -> reviewer -> done. Uses a healthy OpenCode server at 127.0.0.1:4096 or starts one with the official SDK helper. Models are selected from the ordered subscription groups; availability is checked with a disposable no-tools session before task dispatch.\nGroups: OpenCode subscription pair first, then configured OpenRouter provider identities, then connected ChatGPT OAuth. The OpenRouter key2 group is used only when a separate openrouter-2 provider alias is already configured. No paid API fallback.\nOptions: --runtime opencode --probe-timeout-sec 120 (default) --max-iterations 3 --timeout-sec 1800 --check-timeout-sec 3600. Legacy Pi IDs stay in checkpoints as history and cannot be resumed."); return; }
+  if (opts.help) { console.log("agentloop github.com/owner/repo [--issue N] [--label LABEL] [--dry-run] [--keep-open]\nPass a GitHub repository to clone or reuse. Without --issue, processes its open issues in order; --label restricts the queue. OpenCode, Git and authenticated GitHub CLI are required."); return; }
   if (opts["self-test"]) {
     if (parseVerdict("VERDICT: PASS\nVERDICT: FAIL").verdict || !verdictProblems(parseVerdict("VERDICT: PASS"), 1).length) throw Error("Unsafe verdict parser");
     console.log("SELF-TEST OK: false/ambiguous completion rejected; not delivery proof"); return;
+  }
+  if (opts.target) {
+    const current = await run("git", ["rev-parse", "--show-toplevel"]);
+    let matches = false;
+    if (!current.code) {
+      try { matches = (await gh<{ nameWithOwner: string }>(["repo", "view", "--json", "nameWithOwner"])).nameWithOwner.toLowerCase() === opts.target.toLowerCase(); }
+      catch { /* A non-GitHub checkout is not the requested repository. */ }
+    }
+    if (!matches) {
+      const path = resolve(process.cwd(), opts.target.split("/")[1]!);
+      if (!existsSync(path)) {
+        const cloned = await run("git", ["clone", "--", `https://github.com/${opts.target}.git`, path], { timeoutMs: 120_000 });
+        if (cloned.code) throw Error(`Cannot clone ${opts.target}: ${redact(cloned.stderr || cloned.stdout)}`);
+      }
+      process.chdir(path);
+    }
   }
   const rootResult = await run("git", ["rev-parse", "--show-toplevel"]);
   if (rootResult.code) throw Error("Run inside the assigned repository");
   const root = realpathSync(rootResult.stdout.trim());
   const repo = (await gh<{ nameWithOwner: string }>(["repo", "view", "--json", "nameWithOwner"])).nameWithOwner;
-  if (opts.repo && opts.repo !== repo) throw Error("Repository identity mismatch");
+  if (opts.target && opts.target.toLowerCase() !== repo.toLowerCase()) throw Error("Repository identity mismatch");
   let issues = opts.issue ? [await gh<Issue>(["issue", "view", opts.issue, "--repo", repo, "--json", "number,title,body,url,state,labels"])]
-    : (await gh<Issue[][]>(["api", `repos/${repo}/issues?state=open&labels=${encodeURIComponent(opts.label!)}&per_page=100`, "--paginate", "--slurp"])).flat().filter((i: Issue & { pull_request?: unknown }) => !i.pull_request && (opts["include-epics"] || !/^\[EPIC\b/i.test(i.title) && !i.labels.some((l) => l.name === "epic"))).sort((a, b) => a.number - b.number);
+    : (await gh<Issue[][]>(["api", `repos/${repo}/issues?state=open&per_page=100${opts.label ? `&labels=${encodeURIComponent(opts.label)}` : ""}`, "--paginate", "--slurp"])).flat().filter((i: Issue & { pull_request?: unknown }) => !i.pull_request && (opts["include-epics"] || !/^\[EPIC\b/i.test(i.title) && !i.labels.some((l) => l.name === "epic"))).sort((a, b) => a.number - b.number);
   if (!opts.drain) issues = issues.slice(0, Number(opts.limit));
   if (opts["dry-run"]) {
     const selected = []; for (const issue of issues) selected.push({ issue: issue.number, title: issue.title, state: issue.state, relatedPrs: await linkedPrs(issue.number, repo) });
-    console.log(JSON.stringify({ repo, selected, note: "No agents/model calls, worktree creation or delivery performed" }, null, 2)); return;
+    console.log(JSON.stringify({ repo, selected, note: "No agents/model calls, issue worktree creation or delivery performed" }, null, 2)); return;
   }
   const dir = resolve(root, opts["state-dir"]!); mkdirSync(dir, { recursive: true, mode: 0o700 });
   const cooldownFile = resolve(dir, `cooldowns-${repo.replace("/", "-")}.json`);
@@ -632,4 +659,4 @@ async function main() {
   console.log(JSON.stringify({ selected: issues.length, passed: results.filter((r) => r.status === "pass").length, results, notAttempted: issues.filter((i) => !finalResults.has(i.number)).map((i) => i.number), productionReadiness: "NOT ASSERTED" }, null, 2));
   process.exitCode = stop.signal.aborted ? 130 : issues.length > 0 && results.length === issues.length && results.every((r) => r.status === "pass") ? 0 : 1;
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((e) => { console.error(redact(String(e))); process.exitCode = 2; });
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(import.meta.url)) main().catch((e) => { console.error(redact(String(e))); process.exitCode = 2; });

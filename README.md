@@ -11,10 +11,9 @@ GitHub issue → plan → implement → check → review
 Requires Node.js 22+, Git, [GitHub CLI](https://cli.github.com/) authenticated with access to the target repository, and a configured [OpenCode](https://opencode.ai/) provider.
 
 ```bash
-git clone https://github.com/dzianisv/agentloop.git
-cd agentloop && npm install
-cd /path/to/your/repository
-/path/to/agentloop/node_modules/.bin/tsx /path/to/agentloop/scripts/supervisor.ts --issue 123 --keep-open
+npx -y @vibetechnologies/agentloop github.com/owner/repo --issue 123 --keep-open
 ```
+
+Pass a GitHub repository URL or `owner/repo`. Omit `--issue` to process open issues in order; add `--dry-run` to inspect the selection. A missing local checkout is cloned into the current directory.
 
 **Early prototype:** extracted from an AgentPod-specific workflow. Target repositories currently need its `pnpm` gate scripts and delivery conventions. Review permissions and model settings before running; fully autonomous issue completion is not yet verified.

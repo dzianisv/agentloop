@@ -1,19 +1,27 @@
 {
-  "name": "agentloop-supervisor",
+  "name": "@vibetechnologies/agentloop",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "An experimental OpenCode supervisor for GitHub issue workflows",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/dzianisv/agentloop.git" },
+  "homepage": "https://github.com/dzianisv/agentloop#readme",
+  "keywords": ["ai-agents", "coding-agents", "github-issues", "opencode", "agent-supervisor"],
+  "bin": { "agentloop": "dist/supervisor.js" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
   "scripts": {
     "agentloop": "tsx scripts/supervisor.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "build": "tsc --noEmit false --rootDir scripts --outDir dist",
+    "prepack": "npm run build"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.19.4",
-    "tsx": "^4.21.0"
+    "@opencode-ai/sdk": "1.19.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "engines": { "node": ">=22" }
